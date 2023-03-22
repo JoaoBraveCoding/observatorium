@@ -126,11 +126,14 @@ local api = (import 'observatorium-api/observatorium-api.libsonnet');
             storage: '250Mi',
           },
         },
+        storageClassName: 'rhobs',
       },
     },
     objectStorageConfig: {
       secretName: 'loki-objectstorage',
       endpointKey: 'endpoint',
+      regionKey: 'regionKey',
+      bucketsKey: 'buketsKey',
     },
     rulesStorageConfig: {
       type: 's3',
