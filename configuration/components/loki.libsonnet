@@ -1,4 +1,4 @@
-local lokiMixins = import 'github.com/grafana/loki/production/ksonnet/loki/loki.libsonnet';
+local lokiMixins = import 'github.com/JoaoBraveCoding/loki/production/ksonnet/loki/loki.libsonnet';
 // These are the defaults for this components configuration.
 // When calling the function to generate the component's manifest,
 // you can pass an object structured like the default to overwrite default values.
@@ -752,7 +752,7 @@ function(params) {
     // The query scheduler is the only component that its service has the sufix "_discovery"
     // since it uses a headless svc config with PublishNotReadyAddresses for the scheduler
     // to bootstrap scheduler<>worker connections.
-    local name = if component == 'query_scheduler' then component + '_discovery' else component;
+    local name = if component == 'query_scheduler' then component + '_headless' else component;
     metadataFormat(loki.rhobsLoki[name + '_service']) {
       spec+: {
         selector: newPodLabelsSelector(component),

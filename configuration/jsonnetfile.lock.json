@@ -4,6 +4,16 @@
     {
       "source": {
         "git": {
+          "remote": "https://github.com/JoaoBraveCoding/loki.git",
+          "subdir": "production/ksonnet/loki"
+        }
+      },
+      "version": "2808ae20abf432346886580f9435f3622428d75f",
+      "sum": "x7d78uuI+oaeKr4YGRiqxzBUbYAxCrpnd6l65QS/JYQ="
+    },
+    {
+      "source": {
+        "git": {
           "remote": "https://github.com/brancz/kubernetes-grafana.git",
           "subdir": "grafana"
         }
@@ -90,16 +100,6 @@
       },
       "version": "ff583e0194d798a53b30479845e4a78cbae8eb5d",
       "sum": "SWywAq4U0MRPMbASU0Ez8O9ArRNeoZzb75sEuReueow="
-    },
-    {
-      "source": {
-        "git": {
-          "remote": "https://github.com/grafana/loki.git",
-          "subdir": "production/ksonnet/loki"
-        }
-      },
-      "version": "cb8a7440d4539a23ab5137758190f729656a8829",
-      "sum": "zBEQm1H/xB6AUVs4ZMYlEXnVkyv7Gm9a0fpIXyP+t5s="
     },
     {
       "source": {
