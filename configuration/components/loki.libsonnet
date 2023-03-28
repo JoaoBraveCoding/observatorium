@@ -145,7 +145,6 @@ local defaults = {
   config:: {
     local grpcServerMaxMsgSize = 104857600,
     local querierConcurrency = 32,
-    local indexPeriodHours = 24,
     local gossipPort = 7946,
 
     analytics: {
@@ -203,6 +202,11 @@ local defaults = {
 
     compactor: {
       compaction_interval: '2h',
+      // (JoaoBraveCoding) This value might be linked to
+      // $.config.storage_config.boltdb_shipper.shared_store so we could
+      // potentially replace this hard coded value by the one above or move 's3' to
+      // a central config value, like shared_store:: 's3'.
+      // $.config.storage_config.boltdb_shipper.shared_store,
       shared_store: 's3',
       working_directory: '/data/loki/compactor',
     },
@@ -281,7 +285,7 @@ local defaults = {
       max_label_value_length: 2048,
       max_label_names_per_series: 30,
       reject_old_samples: true,
-      reject_old_samples_max_age: '%dh' % indexPeriodHours,
+      reject_old_samples_max_age: '24h',
       creation_grace_period: '10m',
       enforce_metric_name: false,
       max_streams_per_user: 0,
@@ -488,14 +492,29 @@ function(params) {
     lokiMixins {
       _config+:: {
         multi_zone_ingester_enabled: false,
-        // Compactor
-        using_boltdb_shipper: true,
         ruler_enabled: true,
         query_scheduler_enabled: true,
         use_index_gateway: true,
         memberlist_ring_enabled: true,
         // Label to be used to join gossip ring members
         gossip_member_label: 'loki.grafana.com/gossip',
+
+        // Config needed to generate commpactor but still not used
+        // Beginning of "Irrelevant Config"
+        namespace: loki.config.namespace,
+        cluster: 'test',
+        storage_backend: loki.config.config.storage_config.boltdb_shipper.shared_store,
+        s3_address: loki.config.objectStorageConfig.regionKey,
+        s3_bucket_name: loki.config.objectStorageConfig.bucketsKey,
+        // End of "Irrelevant Config"
+
+        // Compactor config
+        // Enable compactor
+        using_boltdb_shipper: true,
+        boltdb_shipper_shared_store: loki.config.config.storage_config.boltdb_shipper.shared_store,
+        compactor_pvc_size: loki.config.volumeClaimTemplate.spec.resources.requests.storage,
+        compactor_pvc_class: loki.config.volumeClaimTemplate.spec.storageClassName,
+
       },
     },
 
@@ -737,11 +756,16 @@ function(params) {
       },
     },
 
+  // nameFormat the loki mixins don't allow users to specify a prefix to append
+  // this function makes sure that regardless or the resource they will always
+  // adhere to the format
+  local nameFormat(name) = loki.config.name + '-' + name,
+
   // metadataFormat for a given k8s object add a prefix to name, set namespace
   // and set common labels
   local metadataFormat(object) = object {
     metadata+: {
-      name: loki.config.name + '-' + object.metadata.name,
+      name: nameFormat(object.metadata.name),
       namespace: loki.config.namespace,
       labels: newCommonLabels(object.metadata.name),
     },
@@ -766,6 +790,143 @@ function(params) {
         selector+: loki.config.podLabelSelector,
       },
     },
+
+  local patchContainerArgs(component) =
+    local osc = loki.config.objectStorageConfig;
+    local rsc = loki.config.rulesStorageConfig;
+    local commonArgs = [
+      '-target=' + normalizedName(component),
+      // Once move the config and overrides to the loki mixins the two lines below
+      // have to be removed.
+      '-config.file=/etc/loki/config/config.yaml',
+      '-limits.per-user-override-config=/etc/loki/config/overrides.yaml',
+    ];
+    commonArgs + (
+      if std.objectHas(osc, 'endpointKey') then [
+        '-s3.url=$(S3_URL)',
+        '-s3.force-path-style=true',
+      ] else [
+        '-s3.buckets=$(S3_BUCKETS)',
+        '-s3.region=$(S3_REGION)',
+        '-s3.access-key-id=$(AWS_ACCESS_KEY_ID)',
+        '-s3.secret-access-key=$(AWS_SECRET_ACCESS_KEY)',
+      ]
+    ) + (
+      if component == 'ruler' && std.objectHas(rsc, 'endpointKey') then [
+        '-ruler.storage.s3.url=$(RULER_S3_URL)',
+        '-ruler.storage.s3.force-path-style=true',
+      ] else if component == 'ruler' then [
+        '-ruler.storage.s3.buckets=$(RULER_S3_BUCKETS)',
+        '-ruler.storage.s3.region=$(RULER_S3_REGION)',
+        '-ruler.storage.s3.access-key-id=$(RULER_AWS_ACCESS_KEY_ID)',
+        '-ruler.storage.s3.secret-access-key=$(RULER_AWS_SECRET_ACCESS_KEY)',
+      ] else []
+    ),
+
+
+  local patchContainerEnv(component) =
+    local osc = loki.config.objectStorageConfig;
+    local rsc = loki.config.rulesStorageConfig;
+    // Syntactic sugar
+    local envVar(name, secretName, secretKey) =
+      { name: name, valueFrom: { secretKeyRef: {
+        name: secretName,
+        key: secretKey,
+      } } };
+    (
+      if std.objectHas(osc, 'endpointKey') then [
+        envVar('S3_URL', osc.secretName, osc.endpointKey),
+      ] else [
+        envVar('S3_BUCKETS', osc.secretName, osc.bucketsKey),
+        envVar('S3_REGION', osc.secretName, osc.regionKey),
+        envVar('AWS_ACCESS_KEY_ID', osc.secretName, osc.accessKeyIdKey),
+        envVar('AWS_SECRET_ACCESS_KEY', osc.secretName, osc.secretAccessKeyKey),
+      ]
+    ) + (
+      if component == 'ruler' && std.objectHas(rsc, 'endpointKey') then [
+        envVar('RULER_S3_URL', rsc.secretName, rsc.endpointKey),
+      ] else if component == 'ruler' then [
+        envVar('RULER_S3_BUCKETS', rsc.secretName, rsc.bucketsKey),
+        envVar('RULER_S3_REGION', rsc.secretName, rsc.regionKey),
+        envVar('RULER_AWS_ACCESS_KEY_ID', rsc.secretName, rsc.accessKeyIdKey),
+        envVar('RULER_AWS_SECRET_ACCESS_KEY', rsc.secretName, rsc.secretAccessKeyKey),
+      ] else []
+    ),
+
+
+  // patchContainer for a given loki container patch it with some defaults
+  local patchContainer(component, container) =
+    container {
+      // With the loki config still being generated by us it's just better to
+      // overwrite completely the args
+      args: patchContainerArgs(component),
+      env: patchContainerEnv(component),
+      name: nameFormat(container.name),
+      // Currently the loki mixins don't configure probes
+      // for the compactor, this should be moved upstream
+      livenessProbe: {
+        httpGet: {
+          // As of this commit, Loki doesn't have a /healthz endpoint like many
+          // other k8s applications so instead we use the /metrics endpoint
+          path: '/metrics',
+          port: 3100,
+          scheme: 'HTTP',
+        },
+        // With these values if the application doesn't reply at the
+        // end of 5min it will be restarted. 10 * 30 = 5min
+        failureThreshold: 10,
+        periodSeconds: 30,
+      },
+      readinessProbe: {
+        httpGet: {
+          // As of this commit, Loki doesn't have a /readyz endpoint like many
+          // other k8s applications so instead we use the /ready endpoint
+          path: '/ready',
+          port: 3100,
+          scheme: 'HTTP',
+        },
+        // With these values if the application doesn't reply at the
+        // end of 30sec it will become NotReady. 10 * 3 = 30sec
+        initialDelaySeconds: 15,
+        periodSeconds: 10,
+        failureThreshold: 3,
+      },
+      // Currently the loki mixins don't configure resources
+      // for the compactor, this should be moved upstream
+      resources: loki.config.components[component].resources,
+      // With the loki config still being generated by us it's just better to
+      // overwrite the volumeMounts otherwise there would be a missmatch with
+      // the args
+      //volumeMounts: patchVolumeMounts(component),
+    },
+
+  // newStatefulset for a given component, generate its service using the loki mixins
+  local newStatefulSet2(component) =
+    local config = loki.config.components[component];
+    local mixin = loki.rhobsLoki[component + '_statefulset'];
+    metadataFormat(mixin) {
+      spec+: {
+        replicas: loki.config.replicas[component],
+        selector: {
+          matchLabels: newPodLabelsSelector(component),
+        },
+        // Generate the service and fetch the name, this is better than accessing
+        // the loki.manifests.component_service as that would create a dependency
+        // on the service creation
+        serviceName: newService(component).metadata.name,
+        template+: {
+          metadata+: {
+            // Loki mixins automatically generates a config hash, this removes it
+            annotations:: {},
+            labels: newPodLabelsSelector(component),
+          },
+          spec+: {
+            containers: [patchContainer(component, container) for container in mixin.spec.template.spec.containers],
+          },
+        },
+      },
+    },
+
 
   // serviceMonitors generates ServiceMonitors for all the components below, this
   // code can be removed once the loki.mixins improves ServiceMonitor generation
@@ -937,5 +1098,10 @@ function(params) {
     [normalizedName(name) + '-service-monitor']: loki.serviceMonitors[name]
     for name in std.objectFields(loki.config.components)
     if std.objectHas(loki.serviceMonitors, name) && loki.config.components[name].withServiceMonitor
+  } + {
+    [normalizedName(name) + '-statefulset']: newStatefulSet2(name)
+    // [normalizedName(name) + '-statefulset-2']: newStatefulSet2(name)
+    for name in std.objectFields(loki.config.components)
+    if std.member(['compactor'], name)
   },
 }

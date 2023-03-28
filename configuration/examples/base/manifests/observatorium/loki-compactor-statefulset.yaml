@@ -31,17 +31,15 @@ spec:
         - -target=compactor
         - -config.file=/etc/loki/config/config.yaml
         - -limits.per-user-override-config=/etc/loki/config/overrides.yaml
-        - -log.level=error
         - -s3.url=$(S3_URL)
         - -s3.force-path-style=true
-        - -distributor.replication-factor=1
         env:
         - name: S3_URL
           valueFrom:
             secretKeyRef:
               key: endpoint
               name: loki-objectstorage
-        image: docker.io/grafana/loki:2.7.2
+        image: grafana/loki:2.7.3
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 10
@@ -53,16 +51,19 @@ spec:
         name: observatorium-xyz-loki-compactor
         ports:
         - containerPort: 3100
-          name: metrics
+          name: http-metrics
         - containerPort: 9095
           name: grpc
+        - containerPort: 7946
+          name: gossip-ring
         readinessProbe:
+          failureThreshold: 3
           httpGet:
             path: /ready
             port: 3100
             scheme: HTTP
           initialDelaySeconds: 15
-          timeoutSeconds: 1
+          periodSeconds: 10
         resources:
           limits:
             cpu: 200m
@@ -71,26 +72,32 @@ spec:
             cpu: 100m
             memory: 100Mi
         volumeMounts:
-        - mountPath: /etc/loki/config/
-          name: config
-          readOnly: false
         - mountPath: /data
-          name: storage
-          readOnly: false
+          name: compactor-data
+        - mountPath: /etc/loki/config
+          name: loki
+        - mountPath: /etc/loki/overrides
+          name: overrides
+      securityContext:
+        fsGroup: 10001
       volumes:
       - configMap:
-          name: observatorium-xyz-loki
-        name: config
+          name: loki
+        name: loki
+      - configMap:
+          name: overrides
+        name: overrides
+  updateStrategy:
+    type: RollingUpdate
   volumeClaimTemplates:
-  - metadata:
-      labels:
-        app.kubernetes.io/instance: observatorium-xyz
-        app.kubernetes.io/name: loki
-        app.kubernetes.io/part-of: observatorium
-      name: storage
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: compactor-data
     spec:
       accessModes:
       - ReadWriteOnce
       resources:
         requests:
           storage: 250Mi
+      storageClassName: rhobs
